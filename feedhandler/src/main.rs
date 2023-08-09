@@ -13,14 +13,17 @@ fn main() {
     rt.block_on(async move {
     
         tokio::spawn(async {
-            let mut gemini = Gemini::connect().await;
-            Gemini::subscribe(gemini.as_mut()).await;
-            Gemini::receive_message(gemini.as_mut()).await;
+            let mut gemini = Gemini::default();
+            gemini.connect();
+            gemini.subscribe();
+            gemini.receive_message();
+          
         });
         tokio::spawn(async {
-            let mut coinbase = Coinbase::connect().await;
-            Coinbase::subscribe(coinbase.as_mut()).await;
-            Coinbase::receive_message(coinbase.as_mut()).await;
+            let mut coinbase = Coinbase::default();
+            coinbase.connect();
+            coinbase.subscribe();
+            coinbase.receive_message();
         });
 
        

@@ -1,80 +1,65 @@
-// {"type": "subscribe","subscriptions":[{"name":"l2","symbols":["BTCUSD","ETHUSD","ETHBTC"]}]}
-
-use futures_util::{
-    stream::{SplitSink, SplitStream},
-    SinkExt, StreamExt,
-};
-use tokio::io::AsyncWriteExt;
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as TMessage};
-pub type WebSocketStream =
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
-
-use serde::{Deserialize, Serialize};
-
 use super::exchange::Exchange;
+use serde::{Deserialize, Serialize};
+use std::net::TcpStream;
+use tungstenite::{connect, stream::MaybeTlsStream, Message as TMessage, WebSocket};
 
 pub struct Gemini {
-    pub write: SplitSink<WebSocketStream, TMessage>,
-    pub read: SplitStream<WebSocketStream>,
+    pub socket: Option<WebSocket<MaybeTlsStream<TcpStream>>>,
 }
-use async_trait::async_trait;
 
-#[async_trait]
-impl Exchange<Gemini> for Gemini {
-    async fn connect() -> Box<Gemini> {
+impl Gemini {
+    pub fn default() -> Self {
+        Gemini { socket: None }
+    }
+}
+
+impl Exchange for Gemini {
+    fn connect(&mut self) {
         println!("Starting Gemini feed handler");
 
         let url = url::Url::parse("wss://api.gemini.com/v2/marketdata").unwrap();
 
-        let (ws_stream, _response) = connect_async(url).await.expect("Failed to connect");
+        let (ws_socket, _response) = connect(url).expect("Failed to connect");
         println!("WebSocket handshake has been successfully completed");
 
-        let (write, read) = ws_stream.split();
-
-        Box::new(Gemini { write, read })
+        self.socket = Some(ws_socket);
     }
-    // , channels: &[String]
-     async fn subscribe(&mut self) {
+
+    fn subscribe(&mut self) {
         // Make subscription API requests
         println!("Sending 'ticker' channel subscription request");
 
-        self.write
-            .send(TMessage::Text(
+        self.socket
+            .as_mut()
+            .unwrap()
+            .write_message(TMessage::Text(
                 r#"{"type": "subscribe","subscriptions":[{"name":"l2","symbols":["BTCUSD"]}]}"#
-                .into(),
+                    .into(),
             ))
-            .await
             .unwrap();
 
         println!("Subscription request sent!");
-       
     }
 
-     async fn receive_message(&mut self) {
-        while let Some(msg) = &mut self.read.next().await {
-            // Unwrap result
+    fn receive_message(&mut self) {
+        while let Ok(msg) = self.socket.as_mut().unwrap().read_message() {
+            // Deserialize the content into a JSON object
             match msg {
-                Ok(m) => {
-                    if let TMessage::Text(content) = m {
-                        match serde_json::from_str::<TickerGemini>(&content) {
-                            Ok(json_object) => {
-                                tokio::io::stdout()
-                                    .write(format!("Gemini price: {}\n", json_object.changes.first().unwrap().get(1).unwrap()).as_bytes())
-                                    .await
-                                    .unwrap();
-                            }
-                            Err(err) => {
-                                println!("Error deserializing JSON object: {}", err);
-                            }
-                        }
-                    } else {
-                        println!("Received a non-TEXT message");
+                TMessage::Text(content) => match serde_json::from_str::<TickerGemini>(&content) {
+                    Ok(json_object) => {
+                        println!(
+                            "Gemini price: {}\n",
+                            json_object.changes.first().unwrap().get(1).unwrap()
+                        );
                     }
+                    Err(err) => {
+                        println!("Error deserializing JSON object: {}", err);
+                    }
+                },
+                _ => {
+                    println!("Received a non-TEXT message");
                 }
-                Err(e) => {
-                    continue;
-                }
-            };
+            }
         }
     }
 }
@@ -113,8 +98,6 @@ pub struct Ticker {
     #[serde(rename = "last_size")]
     pub last_size: String,
 }
-
-
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

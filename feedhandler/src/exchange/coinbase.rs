@@ -1,84 +1,70 @@
-use futures_util::{
-    stream::{SplitSink, SplitStream},
-    SinkExt, StreamExt,
-};
-use tokio::io::AsyncWriteExt;
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as TMessage};
-pub type WebSocketStream =
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
-
-use serde::{Deserialize, Serialize};
-
 use super::exchange::Exchange;
+use serde::{Deserialize, Serialize};
+use std::net::TcpStream;
+use tungstenite::{connect, stream::MaybeTlsStream, Message as TMessage, WebSocket};
 
 pub struct Coinbase {
-    pub write: SplitSink<WebSocketStream, TMessage>,
-    pub read: SplitStream<WebSocketStream>,
+    pub socket: Option<WebSocket<MaybeTlsStream<TcpStream>>>,
 }
-use async_trait::async_trait;
+impl Coinbase {
+    pub fn default() -> Self {
+        Coinbase { socket: None }
+    }
+}
 
-#[async_trait]
-impl Exchange<Coinbase> for Coinbase {
-    async fn connect() -> Box<Coinbase> {
+impl Exchange for Coinbase {
+    fn connect(&mut self) {
         println!("Starting Coinbase feed handler");
 
         let url = url::Url::parse("wss://ws-feed-public.sandbox.exchange.coinbase.com").unwrap();
 
-        let (ws_stream, _response) = connect_async(url).await.expect("Failed to connect");
-        println!("WebSocket handshake has been successfully completed");
+        let (ws_socket, _response) = connect(url).expect("Failed to connect");
+        println!("Coinbase WebSocket handshake has been successfully completed");
 
-        let (write, read) = ws_stream.split();
-
-        Box::new(Coinbase { write, read })
+        self.socket = Some(ws_socket);
     }
-    // , channels: &[String]
-     async fn subscribe(&mut self) {
+    
+    fn subscribe(&mut self) {
         // Make subscription API requests
         println!("Sending 'ticker' channel subscription request");
 
-        self.write
-            .send(TMessage::Text(
+        self.socket
+            .as_mut()
+            .unwrap()
+            .write_message(TMessage::Text(
                 r#"{
-                    "type": "subscribe",
-            "product_ids": [
-                "BTC-USD"
-            ],
-            "channels": ["ticker"]
-                }"#
+                "type": "subscribe",
+        "product_ids": [
+            "BTC-USD"
+        ],
+        "channels": ["ticker"]
+            }"#
                 .into(),
             ))
-            .await
             .unwrap();
 
         println!("Subscription request sent!");
-       
     }
 
-     async fn receive_message(&mut self) {
-        while let Some(msg) = &mut self.read.next().await {
-            // Unwrap result
+    fn receive_message(&mut self) {
+        while let Ok(msg) = self.socket.as_mut().unwrap().read_message() {
+         
             match msg {
-                Ok(m) => {
-                    if let TMessage::Text(content) = m {
-                        match serde_json::from_str::<Ticker>(&content) {
-                            Ok(json_object) => {
-                                tokio::io::stdout()
-                                    .write(format!("Coinbase price:{}, time: {}\n", json_object.price, json_object.time).as_bytes())
-                                    .await
-                                    .unwrap();
-                            }
-                            Err(err) => {
-                                println!("Error deserializing JSON object: {}", err);
-                            }
-                        }
-                    } else {
-                        println!("Received a non-TEXT message");
+                TMessage::Text(content) => match serde_json::from_str::<Ticker>(&content) {
+                    Ok(json_object) => {
+                        println!(
+                            "Coinbase price:{}, time: {}\n",
+                            json_object.price, json_object.time
+                        );
                     }
+                    Err(err) => {
+                        println!("Error deserializing JSON object: {}", err);
+                    }
+                },
+                _ => {
+                    println!("Received a non-TEXT message");
                 }
-                Err(e) => {
-                    continue;
-                }
-            };
+            }
         }
     }
 }
